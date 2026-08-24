@@ -87,7 +87,17 @@ const USAGE_LINES = new Map([
 // unrecognised token as a positional, so `adversarial-review --help` was joined into the
 // review's focus text and ran a full review -- minutes of wall clock and a model turn,
 // for someone who asked what the flags were.
-const REVIEW_OPTION_SCHEMA = { valueOptions: ["base", "scope", "model", "cwd"], booleanOptions: ["json", "background", "wait"], aliasMap: { m: "model" } };
+// freeFormPositionals marks the subcommands whose positionals are arbitrary user prose
+// (review focus text, task prompt). Only those need the "no positionals" rule, because
+// only there can a flag-looking token be something the user meant literally. status,
+// result and cancel take a structured job id instead, so help must win over it -- asking
+// for help while naming a job must never cancel that job.
+const REVIEW_OPTION_SCHEMA = {
+  valueOptions: ["base", "scope", "model", "cwd"],
+  booleanOptions: ["json", "background", "wait"],
+  aliasMap: { m: "model" },
+  freeFormPositionals: true
+};
 
 // One schema per subcommand, read by BOTH the handler and help detection. Keeping a
 // separate hand-maintained list for help detection is what broke it: an option the help
@@ -103,7 +113,8 @@ const COMMAND_OPTION_SCHEMAS = new Map([
     {
       valueOptions: ["model", "effort", "cwd", "prompt-file"],
       booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
-      aliasMap: { m: "model" }
+      aliasMap: { m: "model" },
+      freeFormPositionals: true
     }
   ],
   ["transfer", { valueOptions: ["cwd", "source"], booleanOptions: ["json"] }],
@@ -133,7 +144,13 @@ function isHelpRequest(subcommand, argv) {
     booleanOptions: [...(schema.booleanOptions ?? []), "help"],
     aliasMap: { ...(schema.aliasMap ?? {}), h: "help" }
   });
-  return options.help === true && positionals.length === 0;
+  if (options.help !== true) {
+    return false;
+  }
+  // Only free-form subcommands need to defend against a flag-looking token that the user
+  // meant as prose. Where the positional is a structured job id, a leftover positional is
+  // not a reason to dispatch -- `cancel "job-1 --help"` must print usage, not cancel job-1.
+  return schema.freeFormPositionals !== true || positionals.length === 0;
 }
 
 function printUsage(subcommand) {

@@ -1021,6 +1021,48 @@ test("help is detected when the plugin passes all arguments as one string", () =
   assert.equal(state.lastTurnStart ?? null, null, "a help request started a Codex turn");
 });
 
+test("cancel with a job id and --help prints usage without cancelling the job", () => {
+  const workspace = makeTempDir();
+  const stateDir = resolveStateDir(workspace);
+  fs.mkdirSync(path.join(stateDir, "jobs"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs: [
+          {
+            id: "task-live",
+            kind: "task",
+            kindLabel: "task",
+            status: "running",
+            title: "Codex Task",
+            jobClass: "task",
+            summary: "A job that must survive a help request",
+            createdAt: "2026-03-18T15:30:00.000Z",
+            updatedAt: "2026-03-18T15:30:03.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  // cancel takes a structured job id, not free-form text, so a leftover positional is no
+  // reason to dispatch. Applying the free-form rule here made `cancel "task-live --help"`
+  // cancel task-live instead of explaining the command.
+  const result = run("node", [SCRIPT, "cancel", "task-live --help"], { cwd: workspace });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Usage:/);
+
+  const after = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  assert.equal(after.jobs[0].status, "running", "a help request cancelled the job");
+});
+
 test("help is detected when combined with the shared -C alias", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

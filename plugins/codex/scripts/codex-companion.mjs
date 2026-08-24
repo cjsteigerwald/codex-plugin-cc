@@ -946,8 +946,7 @@ async function handleStatus(argv) {
 
 function handleResult(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    ...COMMAND_OPTION_SCHEMAS.get("result")
   });
 
   const cwd = resolveCommandCwd(options);
@@ -999,8 +998,7 @@ function handleTaskResumeCandidate(argv) {
 
 async function handleCancel(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    ...COMMAND_OPTION_SCHEMAS.get("cancel")
   });
 
   const cwd = resolveCommandCwd(options);

@@ -87,11 +87,12 @@ const USAGE_LINES = new Map([
 // unrecognised token as a positional, so `adversarial-review --help` was joined into the
 // review's focus text and ran a full review -- minutes of wall clock and a model turn,
 // for someone who asked what the flags were.
-// freeFormPositionals marks the subcommands whose positionals are arbitrary user prose
-// (review focus text, task prompt). Only those need the "no positionals" rule, because
-// only there can a flag-looking token be something the user meant literally. status,
-// result and cancel take a structured job id instead, so help must win over it -- asking
-// for help while naming a job must never cancel that job.
+// positionalsAreFreeForm marks the subcommands whose positionals are arbitrary user
+// prose, which is the only case where a leftover positional should block a help request:
+// there, a --help token may be something the user meant literally. It is a predicate over
+// the parsed options rather than a flag, because for task it depends on whether
+// --prompt-file displaced the positional. Everything else -- a structured job id, or a
+// positional the handler discards -- must let help win.
 const REVIEW_PARSE_OPTIONS = {
   valueOptions: ["base", "scope", "model", "cwd"],
   booleanOptions: ["json", "background", "wait"],
@@ -111,14 +112,18 @@ const COMMAND_OPTION_SCHEMAS = new Map([
   // positional -- otherwise `review "--scope working-tree focus --help"` answers a help
   // request with a confusing complaint about custom focus text.
   ["review", REVIEW_PARSE_OPTIONS],
-  ["adversarial-review", { ...REVIEW_PARSE_OPTIONS, freeFormPositionals: true }],
+  ["adversarial-review", { ...REVIEW_PARSE_OPTIONS, positionalsAreFreeForm: () => true }],
   [
     "task",
     {
       valueOptions: ["model", "effort", "cwd", "prompt-file"],
       booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
       aliasMap: { m: "model" },
-      freeFormPositionals: true
+      // Only when the positional is actually the prompt. readTaskPrompt returns the file
+      // unconditionally when --prompt-file is given, so a positional alongside it is
+      // discarded -- there is no literal prompt text to protect, and suppressing help
+      // over it starts a real turn for someone who asked what the flags were.
+      positionalsAreFreeForm: (options) => !options["prompt-file"]
     }
   ],
   ["transfer", { valueOptions: ["cwd", "source"], booleanOptions: ["json"] }],
@@ -151,10 +156,13 @@ function isHelpRequest(subcommand, argv) {
   if (options.help !== true) {
     return false;
   }
-  // Only free-form subcommands need to defend against a flag-looking token that the user
-  // meant as prose. Where the positional is a structured job id, a leftover positional is
-  // not a reason to dispatch -- `cancel "job-1 --help"` must print usage, not cancel job-1.
-  return schema.freeFormPositionals !== true || positionals.length === 0;
+  // A positional only blocks help when it is genuinely free-form input the user may have
+  // meant literally. Where it is a structured job id (`cancel "job-1 --help"`), or where
+  // the handler discards it anyway (`task --prompt-file f.txt ignored`), it is not a
+  // reason to dispatch.
+  const freeForm =
+    typeof schema.positionalsAreFreeForm === "function" && schema.positionalsAreFreeForm(options);
+  return !freeForm || positionals.length === 0;
 }
 
 function printUsage(subcommand) {

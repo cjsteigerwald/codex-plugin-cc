@@ -1021,6 +1021,54 @@ test("help is detected when the plugin passes all arguments as one string", () =
   assert.equal(state.lastTurnStart ?? null, null, "a help request started a Codex turn");
 });
 
+test("task honours help when --prompt-file makes the positional irrelevant", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "prompt.txt"), "the real prompt\n");
+
+  // readTaskPrompt returns the file unconditionally when --prompt-file is set, so the
+  // positional is discarded. Treating it as protected prompt text suppressed help and
+  // started a real turn using prompt.txt.
+  const result = run("node", [SCRIPT, "task", "--prompt-file prompt.txt ignored --help"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Usage:/);
+  const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : {};
+  assert.equal(state.lastTurnStart ?? null, null, "a help request started a Codex turn");
+});
+
+test("task still protects a literal prompt that mentions --help", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  // Without --prompt-file the positional IS the prompt, so it must still block help.
+  const result = run("node", [SCRIPT, "task", "explain what --help prints"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(/^Usage:/.test(result.stdout), false, "a literal prompt printed usage");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.ok(state.lastTurnStart, "the task never started");
+  assert.match(state.lastTurnStart.prompt, /what --help prints/);
+});
+
 test("native review honours help even when a positional is present", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

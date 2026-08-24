@@ -11,6 +11,33 @@ import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
 
 const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
 
+// A broker outlives the client that spawned it: nothing in the protocol tells it the
+// client is gone for good, so without this it stays resident forever holding its socket
+// dir. Idle shutdown is decided BY THE BROKER because it is the only party that can see
+// whether it is serving anyone -- an external sweep cannot, and racing one is unsafe.
+const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+const IDLE_TIMEOUT_ENV = "CODEX_COMPANION_BROKER_IDLE_MS";
+
+function resolveIdleTimeoutMs(rawOption, env = {}) {
+  const raw = rawOption ?? env[IDLE_TIMEOUT_ENV];
+  // Trim before the emptiness test: Number("  ") is 0, so a blank or whitespace-only
+  // value would otherwise DISABLE idle shutdown silently. Explicit "0" is the only
+  // way to turn it off; anything blank falls back to the default.
+  const text = raw === undefined || raw === null ? "" : String(raw).trim();
+  if (text === "") {
+    return DEFAULT_IDLE_TIMEOUT_MS;
+  }
+  const parsed = Number(text);
+  // Reject rather than silently falling back: a typo'd timeout that quietly became
+  // "never expire" would reintroduce the exact leak this exists to close.
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(
+      `Invalid idle timeout ${JSON.stringify(text)}: expected a non-negative number of milliseconds.`
+    );
+  }
+  return parsed;
+}
+
 function buildStreamThreadIds(method, params, result) {
   const threadIds = new Set();
   if (params?.threadId) {
@@ -48,11 +75,13 @@ function writePidFile(pidFile) {
 async function main() {
   const [subcommand, ...argv] = process.argv.slice(2);
   if (subcommand !== "serve") {
-    throw new Error("Usage: node scripts/app-server-broker.mjs serve --endpoint <value> [--cwd <path>] [--pid-file <path>]");
+    throw new Error(
+      "Usage: node scripts/app-server-broker.mjs serve --endpoint <value> [--cwd <path>] [--pid-file <path>] [--idle-timeout <ms>]"
+    );
   }
 
   const { options } = parseArgs(argv, {
-    valueOptions: ["cwd", "pid-file", "endpoint"]
+    valueOptions: ["cwd", "pid-file", "endpoint", "idle-timeout"]
   });
 
   if (!options.endpoint) {
@@ -63,6 +92,7 @@ async function main() {
   const endpoint = String(options.endpoint);
   const listenTarget = parseBrokerEndpoint(endpoint);
   const pidFile = options["pid-file"] ? path.resolve(options["pid-file"]) : null;
+  const idleTimeoutMs = resolveIdleTimeoutMs(options["idle-timeout"], process.env);
   writePidFile(pidFile);
 
   const appClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
@@ -70,6 +100,42 @@ async function main() {
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;
   const sockets = new Set();
+  let idleTimer = null;
+
+  // Idle means nobody is connected AND nothing is in flight. Holding an open socket is
+  // enough to keep the broker alive, so a long streaming turn can never be cut short.
+  function isIdle() {
+    return sockets.size === 0 && activeRequestSocket === null && activeStreamSocket === null;
+  }
+
+  function disarmIdleTimer() {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  }
+
+  function armIdleTimer() {
+    disarmIdleTimer();
+    if (idleTimeoutMs <= 0 || !isIdle()) {
+      return;
+    }
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      // Re-check at fire time: a client may have connected while the timer was pending.
+      if (!isIdle()) {
+        armIdleTimer();
+        return;
+      }
+      void shutdown(server).then(
+        () => process.exit(0),
+        () => process.exit(0)
+      );
+    }, idleTimeoutMs);
+    // The listening server keeps the event loop alive; the timer must not do so itself,
+    // or a broker with idle shutdown disabled could never exit cleanly.
+    idleTimer.unref();
+  }
 
   function clearSocketOwnership(socket) {
     if (activeRequestSocket === socket) {
@@ -116,6 +182,7 @@ async function main() {
   appClient.setNotificationHandler(routeNotification);
 
   const server = net.createServer((socket) => {
+    disarmIdleTimer();
     sockets.add(socket);
     socket.setEncoding("utf8");
     let buffer = "";
@@ -225,11 +292,13 @@ async function main() {
     socket.on("close", () => {
       sockets.delete(socket);
       clearSocketOwnership(socket);
+      armIdleTimer();
     });
 
     socket.on("error", () => {
       sockets.delete(socket);
       clearSocketOwnership(socket);
+      armIdleTimer();
     });
   });
 
@@ -243,7 +312,9 @@ async function main() {
     process.exit(0);
   });
 
-  server.listen(listenTarget.path);
+  server.listen(listenTarget.path, () => {
+    armIdleTimer();
+  });
 }
 
 main().catch((error) => {

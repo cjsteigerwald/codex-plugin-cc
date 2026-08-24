@@ -17,6 +17,10 @@ const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact
 // whether it is serving anyone -- an external sweep cannot, and racing one is unsafe.
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const IDLE_TIMEOUT_ENV = "CODEX_COMPANION_BROKER_IDLE_MS";
+// setTimeout() overflows above 2^31-1 ms: it warns and then fires after 1ms, so an
+// over-large timeout would shut the broker down almost immediately -- the exact opposite
+// of what was asked for. Reject instead, so the mistake is visible at startup.
+const MAX_IDLE_TIMEOUT_MS = 2147483647;
 
 function resolveIdleTimeoutMs(rawOption, env = {}) {
   const raw = rawOption ?? env[IDLE_TIMEOUT_ENV];
@@ -33,6 +37,11 @@ function resolveIdleTimeoutMs(rawOption, env = {}) {
   if (!Number.isFinite(parsed) || parsed < 0) {
     throw new Error(
       `Invalid idle timeout ${JSON.stringify(text)}: expected a non-negative number of milliseconds.`
+    );
+  }
+  if (parsed > MAX_IDLE_TIMEOUT_MS) {
+    throw new Error(
+      `Invalid idle timeout ${JSON.stringify(text)}: must be at most ${MAX_IDLE_TIMEOUT_MS} ms (Node timer limit).`
     );
   }
   return parsed;
@@ -166,11 +175,16 @@ async function main() {
   }
 
   async function shutdown(server) {
+    // Stop accepting FIRST. server.close() stops listening immediately and resolves once
+    // existing connections drain. Tearing down the app server first would leave the
+    // endpoint accepting throughout that await, so ensureBrokerSession's readiness probe
+    // could connect, judge a shutting-down broker "ready", and then lose the connection.
+    const closed = new Promise((resolve) => server.close(resolve));
     for (const socket of sockets) {
       socket.end();
     }
+    await closed;
     await appClient.close().catch(() => {});
-    await new Promise((resolve) => server.close(resolve));
     if (listenTarget.kind === "unix" && fs.existsSync(listenTarget.path)) {
       fs.unlinkSync(listenTarget.path);
     }

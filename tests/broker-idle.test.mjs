@@ -123,8 +123,12 @@ test("broker with --idle-timeout 0 never idles out", async (t) => {
   await delay(1600);
   assert.equal(broker.alive(), true, "idle shutdown ran even though it was disabled");
 
+  // SIGTERM shares shutdown() with the idle path, so this also covers the ordering there.
   broker.child.kill("SIGTERM");
-  await broker.exitedWithin(8000);
+  const result = await broker.exitedWithin(8000);
+  assert.ok(result, "broker did not exit on SIGTERM");
+  assert.equal(fs.existsSync(broker.socketPath), false, "SIGTERM shutdown left the socket behind");
+  assert.equal(fs.existsSync(broker.pidFile), false, "SIGTERM shutdown left the pidfile behind");
 });
 
 test("broker rejects a non-numeric --idle-timeout instead of silently never expiring", async (t) => {
@@ -147,6 +151,30 @@ test("blank --idle-timeout falls back to the default instead of silently disabli
   // used elsewhere in this file.
   await delay(1600);
   assert.equal(broker.alive(), true, "a blank idle timeout disabled idle shutdown");
+
+  broker.child.kill("SIGTERM");
+  await broker.exitedWithin(8000);
+});
+
+test("broker rejects an idle timeout beyond Node's timer range", async (t) => {
+  // setTimeout() overflows above 2^31-1 and fires after 1ms, which would shut the broker
+  // down almost immediately. Asking for ~30 days must fail loudly, not silently invert.
+  const broker = startBroker({ idleTimeout: 30 * 24 * 60 * 60 * 1000 });
+  t.after(() => broker.dispose());
+
+  const result = await broker.exitedWithin(8000);
+  assert.ok(result, "broker did not exit on an out-of-range idle timeout");
+  assert.equal(result.code, 1);
+  assert.match(broker.stderr(), /must be at most 2147483647 ms/);
+});
+
+test("broker accepts an idle timeout exactly at the Node timer limit", async (t) => {
+  // Boundary: 2147483647 is valid, so the guard must not be off by one.
+  const broker = startBroker({ idleTimeout: 2147483647 });
+  t.after(() => broker.dispose());
+
+  assert.equal(await broker.listening(), true, `broker never listened: ${broker.stderr()}`);
+  assert.equal(broker.alive(), true, "broker rejected a timeout that is exactly at the limit");
 
   broker.child.kill("SIGTERM");
   await broker.exitedWithin(8000);

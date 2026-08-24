@@ -72,20 +72,28 @@ const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "hi
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 
-function printUsage() {
-  console.log(
-    [
-      "Usage:",
-      "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
-      "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
-      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
-      "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
-      "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
-      "  node scripts/codex-companion.mjs result [job-id] [--json]",
-      "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
-    ].join("\n")
-  );
+const USAGE_LINES = new Map([
+  ["setup", "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]"],
+  ["review", "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]"],
+  ["adversarial-review", "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]"],
+  ["task", "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]"],
+  ["transfer", "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]"],
+  ["status", "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]"],
+  ["result", "  node scripts/codex-companion.mjs result [job-id] [--json]"],
+  ["cancel", "  node scripts/codex-companion.mjs cancel [job-id] [--json]"]
+]);
+
+// A help request must never become a dispatch. Every subcommand parser treats an
+// unrecognised token as a positional, so `adversarial-review --help` was joined into the
+// review's focus text and ran a full review -- minutes of wall clock and a model turn,
+// for someone who asked what the flags were.
+function isHelpRequest(argv) {
+  return argv.some((token) => token === "--help" || token === "-h" || token === "help");
+}
+
+function printUsage(subcommand) {
+  const line = subcommand ? USAGE_LINES.get(subcommand) : null;
+  console.log(["Usage:", ...(line ? [line] : USAGE_LINES.values())].join("\n"));
 }
 
 function outputResult(value, asJson) {
@@ -1023,8 +1031,14 @@ async function handleCancel(argv) {
 
 async function main() {
   const [subcommand, ...argv] = process.argv.slice(2);
-  if (!subcommand || subcommand === "help" || subcommand === "--help") {
+  if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
     printUsage();
+    return;
+  }
+
+  // Checked before the switch, so help can never reach a handler that would dispatch.
+  if (USAGE_LINES.has(subcommand) && isHelpRequest(argv)) {
+    printUsage(subcommand);
     return;
   }
 

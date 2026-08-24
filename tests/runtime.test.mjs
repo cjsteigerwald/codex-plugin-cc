@@ -969,6 +969,44 @@ test("task --background enqueues a detached worker and exposes per-job status", 
   assert.match(resultPayload.storedJob.rendered, /Handled the requested task/);
 });
 
+test("adversarial-review --help prints usage without dispatching a review", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  const result = run("node", [SCRIPT, "adversarial-review", "--help"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Usage:/);
+  assert.match(result.stdout, /adversarial-review \[--wait\|--background\]/);
+
+  // The point of the change: an unrecognised flag used to become focus text, so asking
+  // for help started a real review. Nothing may reach the model.
+  const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : {};
+  assert.equal(state.lastTurnStart ?? null, null, "a help request started a Codex turn");
+});
+
+test("subcommand help accepts -h and prints only that subcommand", () => {
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+
+  const result = run("node", [SCRIPT, "task", "-h"], { cwd: makeTempDir(), env: buildEnv(binDir) });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /codex-companion\.mjs task \[--background\]/);
+  // Scoped, not the whole usage block.
+  assert.equal(/adversarial-review/.test(result.stdout), false, "task -h printed other subcommands");
+});
+
 test("review rejects focus text because it is native-review only", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

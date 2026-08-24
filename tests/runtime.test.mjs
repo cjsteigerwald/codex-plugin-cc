@@ -1021,6 +1021,32 @@ test("help is detected when the plugin passes all arguments as one string", () =
   assert.equal(state.lastTurnStart ?? null, null, "a help request started a Codex turn");
 });
 
+test("focus text containing --help is reviewed, not swallowed as a help request", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0];\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
+
+  // Normalization splits focus text into tokens, so a token scan would see --help here and
+  // make this review impossible to run. Help means the flag AND nothing else asked for.
+  const result = run("node", [SCRIPT, "adversarial-review", "why does --help start a review"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(/^Usage:/.test(result.stdout), false, "focus text containing --help printed usage");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.ok(state.lastTurnStart, "the review never started");
+  assert.match(state.lastTurnStart.prompt, /start a review/);
+});
+
 test("focus text mentioning help still runs the review", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

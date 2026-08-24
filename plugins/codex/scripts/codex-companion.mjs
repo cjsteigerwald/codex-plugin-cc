@@ -87,12 +87,31 @@ const USAGE_LINES = new Map([
 // unrecognised token as a positional, so `adversarial-review --help` was joined into the
 // review's focus text and ran a full review -- minutes of wall clock and a model turn,
 // for someone who asked what the flags were.
-// Only the flags, never the bare word "help": argv is normalized before this runs, so a
-// focus string like "review the help system" tokenizes to include "help", and matching it
-// would print usage instead of running the review the user asked for. A bare `help`
-// subcommand is still handled separately, before dispatch.
+// Detecting help by scanning tokens is not safe once argv is normalized. Focus text is
+// split into tokens too, so `adversarial-review "why does --help start a review"` yields a
+// --help token and a token scan would make that review impossible to run -- a hard block,
+// not just a surprise. Parse instead, and treat it as help only when nothing else was
+// asked for: the help flag present AND no focus text left over. The bare word "help" is
+// never matched here; a `help` subcommand is handled separately before dispatch.
+const HELP_DETECTION_VALUE_OPTIONS = [
+  "base",
+  "scope",
+  "model",
+  "cwd",
+  "effort",
+  "prompt-file",
+  "source",
+  "timeout-ms",
+  "poll-interval-ms"
+];
+
 function isHelpRequest(argv) {
-  return argv.some((token) => token === "--help" || token === "-h");
+  const { options, positionals } = parseArgs(normalizeArgv(argv), {
+    valueOptions: HELP_DETECTION_VALUE_OPTIONS,
+    booleanOptions: ["help"],
+    aliasMap: { h: "help" }
+  });
+  return options.help === true && positionals.length === 0;
 }
 
 function printUsage(subcommand) {
@@ -1045,7 +1064,7 @@ async function main() {
   // raw token comparison misses the flag -- the handler would then split it itself and
   // start a full review with --help as focus text, which is exactly what this prevents.
   // Checked before the switch, so help can never reach a handler that would dispatch.
-  if (USAGE_LINES.has(subcommand) && isHelpRequest(normalizeArgv(argv))) {
+  if (USAGE_LINES.has(subcommand) && isHelpRequest(argv)) {
     printUsage(subcommand);
     return;
   }

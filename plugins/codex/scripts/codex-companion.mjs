@@ -87,29 +87,46 @@ const USAGE_LINES = new Map([
 // unrecognised token as a positional, so `adversarial-review --help` was joined into the
 // review's focus text and ran a full review -- minutes of wall clock and a model turn,
 // for someone who asked what the flags were.
-// Detecting help by scanning tokens is not safe once argv is normalized. Focus text is
-// split into tokens too, so `adversarial-review "why does --help start a review"` yields a
-// --help token and a token scan would make that review impossible to run -- a hard block,
-// not just a surprise. Parse instead, and treat it as help only when nothing else was
-// asked for: the help flag present AND no focus text left over. The bare word "help" is
-// never matched here; a `help` subcommand is handled separately before dispatch.
-const HELP_DETECTION_VALUE_OPTIONS = [
-  "base",
-  "scope",
-  "model",
-  "cwd",
-  "effort",
-  "prompt-file",
-  "source",
-  "timeout-ms",
-  "poll-interval-ms"
-];
+const REVIEW_OPTION_SCHEMA = { valueOptions: ["base", "scope", "model", "cwd"], booleanOptions: ["json", "background", "wait"], aliasMap: { m: "model" } };
 
-function isHelpRequest(argv) {
+// One schema per subcommand, read by BOTH the handler and help detection. Keeping a
+// separate hand-maintained list for help detection is what broke it: an option the help
+// parser did not know (`--wait`) became a positional, help was not detected, and the real
+// parser then consumed the option and reviewed `--help` as focus text. Any option added
+// here is automatically known to both, so the two can never disagree again.
+const COMMAND_OPTION_SCHEMAS = new Map([
+  ["setup", { valueOptions: ["cwd"], booleanOptions: ["json", "enable-review-gate", "disable-review-gate"] }],
+  ["review", REVIEW_OPTION_SCHEMA],
+  ["adversarial-review", REVIEW_OPTION_SCHEMA],
+  [
+    "task",
+    {
+      valueOptions: ["model", "effort", "cwd", "prompt-file"],
+      booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+      aliasMap: { m: "model" }
+    }
+  ],
+  ["transfer", { valueOptions: ["cwd", "source"], booleanOptions: ["json"] }],
+  ["status", { valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"], booleanOptions: ["json", "all", "wait"] }],
+  ["result", { valueOptions: ["cwd"], booleanOptions: ["json"] }],
+  ["cancel", { valueOptions: ["cwd"], booleanOptions: ["json"] }]
+]);
+
+// Parse with the subcommand's real schema, then treat it as help only when the flag is
+// present AND nothing else was asked for. Scanning tokens cannot work here: argv is
+// normalized first, so focus text is split into tokens too, and a scan would match
+// `adversarial-review "why does --help start a review"` and make that review impossible
+// to run. Parsing also gets `--` right for free -- anything after it is a positional, so
+// a literal `--help` in focus text stays focus text.
+function isHelpRequest(subcommand, argv) {
+  const schema = COMMAND_OPTION_SCHEMAS.get(subcommand);
+  if (!schema) {
+    return false;
+  }
   const { options, positionals } = parseArgs(normalizeArgv(argv), {
-    valueOptions: HELP_DETECTION_VALUE_OPTIONS,
-    booleanOptions: ["help"],
-    aliasMap: { h: "help" }
+    valueOptions: schema.valueOptions ?? [],
+    booleanOptions: [...(schema.booleanOptions ?? []), "help"],
+    aliasMap: { ...(schema.aliasMap ?? {}), h: "help" }
   });
   return options.help === true && positionals.length === 0;
 }
@@ -245,8 +262,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
 
 async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+    ...COMMAND_OPTION_SCHEMAS.get("setup")
   });
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
@@ -742,11 +758,7 @@ function enqueueBackgroundTask(cwd, job, request) {
 
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd"],
-    booleanOptions: ["json", "background", "wait"],
-    aliasMap: {
-      m: "model"
-    }
+    ...REVIEW_OPTION_SCHEMA
   });
 
   const cwd = resolveCommandCwd(options);
@@ -792,11 +804,7 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
-    aliasMap: {
-      m: "model"
-    }
+    ...COMMAND_OPTION_SCHEMAS.get("task")
   });
 
   const cwd = resolveCommandCwd(options);
@@ -855,8 +863,7 @@ async function handleTask(argv) {
 
 async function handleTransfer(argv) {
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "source"],
-    booleanOptions: ["json"]
+    ...COMMAND_OPTION_SCHEMAS.get("transfer")
   });
 
   const cwd = resolveCommandCwd(options);
@@ -913,8 +920,7 @@ async function handleTaskWorker(argv) {
 
 async function handleStatus(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
-    booleanOptions: ["json", "all", "wait"]
+    ...COMMAND_OPTION_SCHEMAS.get("status")
   });
 
   const cwd = resolveCommandCwd(options);
@@ -1064,7 +1070,7 @@ async function main() {
   // raw token comparison misses the flag -- the handler would then split it itself and
   // start a full review with --help as focus text, which is exactly what this prevents.
   // Checked before the switch, so help can never reach a handler that would dispatch.
-  if (USAGE_LINES.has(subcommand) && isHelpRequest(argv)) {
+  if (USAGE_LINES.has(subcommand) && isHelpRequest(subcommand, argv)) {
     printUsage(subcommand);
     return;
   }

@@ -1021,6 +1021,55 @@ test("help is detected when the plugin passes all arguments as one string", () =
   assert.equal(state.lastTurnStart ?? null, null, "a help request started a Codex turn");
 });
 
+test("help is detected when it follows another recognized flag", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  // Help detection must parse with the subcommand's real schema. A separate list would
+  // not know --wait, which would land in positionals, defeat the no-focus-text rule, and
+  // let the real parser consume --wait and review "--help" as focus text.
+  const result = run("node", [SCRIPT, "adversarial-review", "--wait --help"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Usage:/);
+  const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : {};
+  assert.equal(state.lastTurnStart ?? null, null, "a help request started a Codex turn");
+});
+
+test("a quoted focus argument keeps its help-looking words as focus text", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0];\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
+
+  const result = run("node", [SCRIPT, "adversarial-review", "review --help handling"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(/^Usage:/.test(result.stdout), false, "a focused review printed usage instead");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.ok(state.lastTurnStart, "the review never started");
+  assert.match(state.lastTurnStart.prompt, /handling/);
+});
+
 test("focus text containing --help is reviewed, not swallowed as a help request", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

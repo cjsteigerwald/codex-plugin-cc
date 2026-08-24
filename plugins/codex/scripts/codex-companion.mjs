@@ -92,11 +92,10 @@ const USAGE_LINES = new Map([
 // only there can a flag-looking token be something the user meant literally. status,
 // result and cancel take a structured job id instead, so help must win over it -- asking
 // for help while naming a job must never cancel that job.
-const REVIEW_OPTION_SCHEMA = {
+const REVIEW_PARSE_OPTIONS = {
   valueOptions: ["base", "scope", "model", "cwd"],
   booleanOptions: ["json", "background", "wait"],
-  aliasMap: { m: "model" },
-  freeFormPositionals: true
+  aliasMap: { m: "model" }
 };
 
 // One schema per subcommand, read by BOTH the handler and help detection. Keeping a
@@ -106,8 +105,13 @@ const REVIEW_OPTION_SCHEMA = {
 // here is automatically known to both, so the two can never disagree again.
 const COMMAND_OPTION_SCHEMAS = new Map([
   ["setup", { valueOptions: ["cwd"], booleanOptions: ["json", "enable-review-gate", "disable-review-gate"] }],
-  ["review", REVIEW_OPTION_SCHEMA],
-  ["adversarial-review", REVIEW_OPTION_SCHEMA],
+  // Same parsing, different positional semantics. adversarial-review takes focus text, so
+  // a --help token there may be prose. Native review rejects ALL focus text in
+  // validateNativeReviewRequest, so it has no free-form use and help can win over any
+  // positional -- otherwise `review "--scope working-tree focus --help"` answers a help
+  // request with a confusing complaint about custom focus text.
+  ["review", REVIEW_PARSE_OPTIONS],
+  ["adversarial-review", { ...REVIEW_PARSE_OPTIONS, freeFormPositionals: true }],
   [
     "task",
     {
@@ -780,7 +784,7 @@ function enqueueBackgroundTask(cwd, job, request) {
 
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
-    ...REVIEW_OPTION_SCHEMA
+    ...REVIEW_PARSE_OPTIONS
   });
 
   const cwd = resolveCommandCwd(options);

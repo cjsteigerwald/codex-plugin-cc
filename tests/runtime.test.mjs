@@ -1021,6 +1021,32 @@ test("help is detected when the plugin passes all arguments as one string", () =
   assert.equal(state.lastTurnStart ?? null, null, "a help request started a Codex turn");
 });
 
+test("native review honours help even when a positional is present", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  // Native review rejects all focus text in validateNativeReviewRequest, so unlike
+  // adversarial-review it has no free-form positional use. Sharing the free-form
+  // classification made a help request answered with a complaint about focus text.
+  const result = run("node", [SCRIPT, "review", "--scope working-tree focus --help"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Usage:/);
+  assert.equal(/custom focus text/.test(result.stderr), false, "help was answered with the focus-text error");
+  const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : {};
+  assert.equal(state.lastTurnStart ?? null, null, "a help request started a Codex turn");
+});
+
 test("cancel with a job id and --help prints usage without cancelling the job", () => {
   const workspace = makeTempDir();
   const stateDir = resolveStateDir(workspace);

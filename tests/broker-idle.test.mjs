@@ -235,3 +235,43 @@ test("broker still idles out after a client abandons a streaming request", async
   assert.ok(result, `broker stayed resident after the client abandoned a stream: ${broker.stderr()}`);
   assert.equal(result.code, 0);
 });
+
+test("broker serves a reconnecting client after a stream was abandoned", async (t) => {
+  // Releasing a dead owner only inside the idle check is not enough: the busy guard still
+  // sees the non-null destroyed socket and answers every new client with BROKER_BUSY,
+  // while that connected client also keeps the broker from ever idling out. The result is
+  // a shared broker that is simultaneously "idle" and unusable.
+  const broker = startBroker({ idleTimeout: 0 });
+  t.after(() => broker.dispose());
+  assert.equal(await broker.listening(), true, `broker never listened: ${broker.stderr()}`);
+
+  const abandoned = await connectTo(broker.socketPath);
+  const started = readReply(abandoned, 1);
+  sendLine(abandoned, { id: 1, method: "thread/start", params: { cwd: process.cwd(), ephemeral: true } });
+  const threadId = (await started).result?.thread?.id;
+  assert.ok(threadId, "fake codex did not start a thread");
+
+  sendLine(abandoned, {
+    id: 2,
+    method: "turn/start",
+    params: { threadId, input: [{ type: "text", text: "hello" }] }
+  });
+  abandoned.destroy();
+
+  // Let the abandoned response land and assign the destroyed socket as the stream owner.
+  await delay(600);
+
+  const reconnect = await connectTo(broker.socketPath);
+  t.after(() => reconnect.destroy());
+  const replied = readReply(reconnect, 10);
+  sendLine(reconnect, { id: 10, method: "thread/start", params: { cwd: process.cwd(), ephemeral: true } });
+
+  const reply = await Promise.race([replied, delay(10000).then(() => null)]);
+  assert.ok(reply, "reconnecting client got no reply at all");
+  assert.equal(
+    reply.error?.message,
+    undefined,
+    `reconnecting client was rejected: ${reply.error?.message ?? ""}`
+  );
+  assert.ok(reply.result?.thread?.id, "reconnecting client did not get a usable thread");
+});

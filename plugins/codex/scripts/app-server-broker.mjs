@@ -113,16 +113,25 @@ async function main() {
 
   // Ownership can outlive its socket: a client can disconnect while its streaming request
   // is still awaiting a response, and the response then assigns the already-closed socket
-  // to activeStreamSocket. A destroyed socket has nobody listening, so treating it as
-  // "busy" would pin the broker open forever if turn/completed never arrives.
-  function ownershipIsLive(socket) {
-    return socket !== null && !socket.destroyed;
+  // to activeStreamSocket. Release it at every point where ownership is inspected, rather
+  // than teaching one check to tolerate it -- the idle check, the notification target and
+  // the busy guard must never disagree about whether the broker is in use. A stale owner
+  // that only the idle check ignored would leave the broker rejecting every new client
+  // with BROKER_BUSY while a connected client also kept it from ever shutting down.
+  function releaseDeadOwnership() {
+    if (activeRequestSocket !== null && activeRequestSocket.destroyed) {
+      activeRequestSocket = null;
+    }
+    if (activeStreamSocket !== null && activeStreamSocket.destroyed) {
+      activeStreamSocket = null;
+      activeStreamThreadIds = null;
+    }
   }
 
   // Idle means nobody is connected AND nothing is in flight. Holding an open socket is
   // enough to keep the broker alive, so a long streaming turn can never be cut short.
   function isIdle() {
-    return sockets.size === 0 && !ownershipIsLive(activeRequestSocket) && !ownershipIsLive(activeStreamSocket);
+    return sockets.size === 0 && activeRequestSocket === null && activeStreamSocket === null;
   }
 
   function disarmIdleTimer() {
@@ -134,11 +143,13 @@ async function main() {
 
   function armIdleTimer() {
     disarmIdleTimer();
+    releaseDeadOwnership();
     if (idleTimeoutMs <= 0 || !isIdle()) {
       return;
     }
     idleTimer = setTimeout(() => {
       idleTimer = null;
+      releaseDeadOwnership();
       // Re-check at fire time: a client may have connected while the timer was pending.
       if (!isIdle()) {
         armIdleTimer();
@@ -165,6 +176,7 @@ async function main() {
   }
 
   function routeNotification(message) {
+    releaseDeadOwnership();
     const target = activeRequestSocket ?? activeStreamSocket;
     if (!target) {
       return;
@@ -208,6 +220,7 @@ async function main() {
 
   const server = net.createServer((socket) => {
     disarmIdleTimer();
+    releaseDeadOwnership();
     sockets.add(socket);
     socket.setEncoding("utf8");
     let buffer = "";
@@ -259,6 +272,7 @@ async function main() {
           continue;
         }
 
+        releaseDeadOwnership();
         const allowInterruptDuringActiveStream =
           isInterruptRequest(message) && activeStreamSocket && activeStreamSocket !== socket && !activeRequestSocket;
 

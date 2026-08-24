@@ -179,3 +179,59 @@ test("broker accepts an idle timeout exactly at the Node timer limit", async (t)
   broker.child.kill("SIGTERM");
   await broker.exitedWithin(8000);
 });
+
+function sendLine(socket, message) {
+  socket.write(`${JSON.stringify(message)}\n`);
+}
+
+function readReply(socket, id) {
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      let index;
+      while ((index = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, index);
+        buffer = buffer.slice(index + 1);
+        if (!line.trim()) continue;
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (message.id === id) resolve(message);
+      }
+    });
+    socket.on("error", reject);
+  });
+}
+
+test("broker still idles out after a client abandons a streaming request", async (t) => {
+  // A client can disconnect while turn/start is still awaiting its response. The close
+  // handler arms the timer, but the response then assigns the already-closed socket to
+  // activeStreamSocket, so the timer finds the broker "busy" and does not re-arm. When
+  // turn/completed later clears that stale ownership nothing schedules again, and the
+  // empty broker stays resident forever.
+  const broker = startBroker({ idleTimeout: 400 });
+  t.after(() => broker.dispose());
+  assert.equal(await broker.listening(), true, `broker never listened: ${broker.stderr()}`);
+
+  const socket = await connectTo(broker.socketPath);
+  const started = readReply(socket, 1);
+  sendLine(socket, { id: 1, method: "thread/start", params: { cwd: process.cwd(), ephemeral: true } });
+  const threadId = (await started).result?.thread?.id;
+  assert.ok(threadId, "fake codex did not start a thread");
+
+  // Fire a streaming request and abandon it immediately, without reading the response.
+  sendLine(socket, {
+    id: 2,
+    method: "turn/start",
+    params: { threadId, input: [{ type: "text", text: "hello" }] }
+  });
+  socket.destroy();
+
+  const result = await broker.exitedWithin(15000);
+  assert.ok(result, `broker stayed resident after the client abandoned a stream: ${broker.stderr()}`);
+  assert.equal(result.code, 0);
+});

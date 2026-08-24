@@ -111,10 +111,18 @@ async function main() {
   const sockets = new Set();
   let idleTimer = null;
 
+  // Ownership can outlive its socket: a client can disconnect while its streaming request
+  // is still awaiting a response, and the response then assigns the already-closed socket
+  // to activeStreamSocket. A destroyed socket has nobody listening, so treating it as
+  // "busy" would pin the broker open forever if turn/completed never arrives.
+  function ownershipIsLive(socket) {
+    return socket !== null && !socket.destroyed;
+  }
+
   // Idle means nobody is connected AND nothing is in flight. Holding an open socket is
   // enough to keep the broker alive, so a long streaming turn can never be cut short.
   function isIdle() {
-    return sockets.size === 0 && activeRequestSocket === null && activeStreamSocket === null;
+    return sockets.size === 0 && !ownershipIsLive(activeRequestSocket) && !ownershipIsLive(activeStreamSocket);
   }
 
   function disarmIdleTimer() {
@@ -170,6 +178,9 @@ async function main() {
         if (activeRequestSocket === target) {
           activeRequestSocket = null;
         }
+        // The socket that owned this stream may already be gone, in which case no close
+        // handler will fire again -- schedule here or the broker never idles out.
+        armIdleTimer();
       }
     }
   }
@@ -288,6 +299,7 @@ async function main() {
           if (activeRequestSocket === socket) {
             activeRequestSocket = null;
           }
+          armIdleTimer();
         } catch (error) {
           send(socket, {
             id: message.id,
@@ -299,6 +311,7 @@ async function main() {
           if (activeStreamSocket === socket && !isStreaming) {
             activeStreamSocket = null;
           }
+          armIdleTimer();
         }
       }
     });

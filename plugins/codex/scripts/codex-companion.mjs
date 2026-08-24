@@ -744,7 +744,7 @@ async function handleReviewCommand(argv, config) {
         cwd,
         base: options.base,
         scope: options.scope,
-        model: options.model,
+        model: normalizeRequestedModel(options.model),
         effort: normalizeReasoningEffort(options.effort),
         focusText,
         reviewName: config.reviewName,

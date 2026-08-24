@@ -236,6 +236,14 @@ test("adversarial-review documents and parses --model and --effort", () => {
   // ...and thread effort through to the turn, or parsing it changes nothing.
   assert.match(companion, /effort: normalizeReasoningEffort\(options\.effort\)/);
   assert.match(companion, /effort: request\.effort,\n\s*sandbox: "read-only"/);
+  // The usage advertises --model <model|spark>, so the review path must resolve the alias
+  // the same way the task path does. Forwarding options.model raw sends the literal
+  // "spark" to turn/start instead of gpt-5.3-codex-spark.
+  assert.match(
+    companion,
+    /model: normalizeRequestedModel\(options\.model\),\n\s*effort: normalizeReasoningEffort\(options\.effort\)/,
+    "handleReviewCommand must normalize --model, not forward it raw"
+  );
 
   const usage = companion.match(/adversarial-review \[[^\n"]*/)?.[0] ?? "";
   assert.match(usage, /--effort <none\|minimal\|low\|medium\|high\|xhigh>/);

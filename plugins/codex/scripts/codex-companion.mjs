@@ -123,8 +123,13 @@ function isHelpRequest(subcommand, argv) {
   if (!schema) {
     return false;
   }
-  const { options, positionals } = parseArgs(normalizeArgv(argv), {
-    valueOptions: schema.valueOptions ?? [],
+  // Detect through parseCommandInput, not parseArgs: the handlers reach the parser that
+  // way, so this inherits the shared `-C` alias and the argv normalization instead of
+  // restating them. Calling parseArgs directly is what missed `-C <dir> --help` -- the
+  // alias was unknown here, so the flag and its value became positionals, help was not
+  // detected, and the handler then dispatched with --help left as input.
+  const { options, positionals } = parseCommandInput(argv, {
+    ...schema,
     booleanOptions: [...(schema.booleanOptions ?? []), "help"],
     aliasMap: { ...(schema.aliasMap ?? {}), h: "help" }
   });

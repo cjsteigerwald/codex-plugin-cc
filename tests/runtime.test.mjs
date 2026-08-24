@@ -1021,6 +1021,31 @@ test("help is detected when the plugin passes all arguments as one string", () =
   assert.equal(state.lastTurnStart ?? null, null, "a help request started a Codex turn");
 });
 
+test("help is detected when combined with the shared -C alias", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  // -C is injected by parseCommandInput, not by any subcommand schema. Detecting help
+  // with a bare parseArgs call misses it, so -C and its value become positionals, the
+  // no-focus-text rule fails, and the handler dispatches with --help still in the input.
+  const result = run("node", [SCRIPT, "adversarial-review", `-C ${repo} --help`], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Usage:/);
+  const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : {};
+  assert.equal(state.lastTurnStart ?? null, null, "a help request started a Codex turn");
+});
+
 test("help is detected when it follows another recognized flag", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

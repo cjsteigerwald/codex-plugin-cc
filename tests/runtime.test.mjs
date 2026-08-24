@@ -995,6 +995,58 @@ test("adversarial-review --help prints usage without dispatching a review", () =
   assert.equal(state.lastTurnStart ?? null, null, "a help request started a Codex turn");
 });
 
+test("help is detected when the plugin passes all arguments as one string", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  // The plugin commands invoke the companion with "$ARGUMENTS" as a SINGLE quoted
+  // argument, so this is the shape real usage takes. Comparing raw tokens misses the
+  // flag here, and the handler then splits the string itself and reviews with --help as
+  // focus text.
+  const result = run("node", [SCRIPT, "adversarial-review", "--base main --help"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Usage:/);
+  const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : {};
+  assert.equal(state.lastTurnStart ?? null, null, "a help request started a Codex turn");
+});
+
+test("focus text mentioning help still runs the review", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0];\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
+
+  // Because argv is normalized before the check, a bare "help" token appears in ordinary
+  // focus text. Matching it would silently swap the user's review for a usage dump.
+  const result = run("node", [SCRIPT, "adversarial-review", "review the help system"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(/^Usage:/.test(result.stdout), false, "focus text containing 'help' printed usage");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.ok(state.lastTurnStart, "the review never started");
+  assert.match(state.lastTurnStart.prompt, /help system/);
+});
+
 test("subcommand help accepts -h and prints only that subcommand", () => {
   const binDir = makeTempDir();
   installFakeCodex(binDir);

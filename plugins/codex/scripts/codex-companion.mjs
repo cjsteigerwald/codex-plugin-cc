@@ -87,8 +87,12 @@ const USAGE_LINES = new Map([
 // unrecognised token as a positional, so `adversarial-review --help` was joined into the
 // review's focus text and ran a full review -- minutes of wall clock and a model turn,
 // for someone who asked what the flags were.
+// Only the flags, never the bare word "help": argv is normalized before this runs, so a
+// focus string like "review the help system" tokenizes to include "help", and matching it
+// would print usage instead of running the review the user asked for. A bare `help`
+// subcommand is still handled separately, before dispatch.
 function isHelpRequest(argv) {
-  return argv.some((token) => token === "--help" || token === "-h" || token === "help");
+  return argv.some((token) => token === "--help" || token === "-h");
 }
 
 function printUsage(subcommand) {
@@ -1036,8 +1040,12 @@ async function main() {
     return;
   }
 
+  // Normalize first. The plugin commands pass "$ARGUMENTS" as ONE quoted argument, so
+  // `/codex:adversarial-review --base main --help` arrives here as a single string and a
+  // raw token comparison misses the flag -- the handler would then split it itself and
+  // start a full review with --help as focus text, which is exactly what this prevents.
   // Checked before the switch, so help can never reach a handler that would dispatch.
-  if (USAGE_LINES.has(subcommand) && isHelpRequest(argv)) {
+  if (USAGE_LINES.has(subcommand) && isHelpRequest(normalizeArgv(argv))) {
     printUsage(subcommand);
     return;
   }

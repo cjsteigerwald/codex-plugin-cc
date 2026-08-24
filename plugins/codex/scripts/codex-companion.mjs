@@ -727,6 +727,17 @@ async function handleReviewCommand(argv, config) {
     scope: options.scope
   });
 
+  // Parsing --effort here made it a valid flag for the native `review` subcommand too,
+  // which shares this handler. The native branch never forwards effort, so the request
+  // was being silently ignored where it used to fall into focusText and be rejected.
+  // Fail closed: a caller must opt in, so a future one cannot inherit the silent drop.
+  if (options.effort !== undefined && !config.supportsEffort) {
+    throw new Error(
+      "`/codex:review` maps directly to the built-in reviewer and does not support `--effort`. Retry with `/codex:adversarial-review --effort " +
+        `${String(options.effort)}\` to choose a reasoning effort.`
+    );
+  }
+
   config.validateRequest?.(target, focusText);
   const metadata = buildReviewJobMetadata(config.reviewName, target);
   const job = createCompanionJob({
@@ -1039,7 +1050,8 @@ async function main() {
       break;
     case "adversarial-review":
       await handleReviewCommand(argv, {
-        reviewName: "Adversarial Review"
+        reviewName: "Adversarial Review",
+        supportsEffort: true
       });
       break;
     case "task":

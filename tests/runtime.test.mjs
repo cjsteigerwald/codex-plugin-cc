@@ -1015,6 +1015,29 @@ test("review rejects focus text because it is native-review only", () => {
   assert.match(result.stderr, /\/codex:adversarial-review focus on auth/i);
 });
 
+test("review rejects --effort because the native reviewer cannot honour it", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  // handleReviewCommand is shared with the native `review` subcommand, which never
+  // forwards effort. Parsing the flag without rejecting it would silently run the review
+  // at the configured default instead of the requested effort.
+  const result = run("node", [SCRIPT, "review", "--effort", "high"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status > 0, true, result.stdout);
+  assert.match(result.stderr, /does not support `--effort`/i);
+  assert.match(result.stderr, /\/codex:adversarial-review --effort high/i);
+});
+
 test("review rejects staged-only scope because it is native-review only", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
